@@ -1,168 +1,425 @@
-import pygame
+import turtle
 import random
-from qlearner import QLearning
+import time
+import math
+import gym
+from gym       import spaces
+from gym.utils import seeding
 
-from tools import Point
-from collections import deque
+from utils.config import *
 
-from const import *
+class Snake(gym.Env):
 
+    def __init__(self,
+                 human = False,
+                 env_info = {'state_space':None}):
+        super(Snake, self).__init__()
 
+        self.seed()
 
-def run(learner, game_count):
-    screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
-    pygame.display.set_caption('Snake - Qvalues')
-    clock = pygame.time.Clock()
+        self.action_space = 4    # 4 possible actions: up, down, left, right
+        self.state_space  = 12
+        self.dead         = False
+        self.reward       = 0
+        self.total_score  = 0
+        self.maximum      = 0
+        self.human        = human
+        self.env_info     = env_info
 
-    # Starting position of snake
-    # if start_positionition is not defined, then initiate THE HEAD of a snake of length = 3
-    # (so, the box will be within 2 (e.g: [0, 1, 2]) ->  box-3 (e.g: [box-3, box-2, box-1]))
-    frames_since_last_apple = 0
-    start_position          = None
+        ## GAME CREATION WITH TURTLE (RENDER?)
+        # screen/background
+        self.win = turtle.Screen()
+        self.win.title(TITLE)
+        self.win.bgcolor(BG_COLOR)
+        self.win.tracer(0)
+        self.win.setup(width=WIN_WIDTH, height=WIN_HEIGHT)
+                
+        # snake
+        self.init_snake()
+
+        # apple
+        self.init_apple()
+
+        # distance between apple and snake
+        self.dist = math.sqrt((self.snake.xcor()-self.apple.xcor())**2 + (self.snake.ycor()-self.apple.ycor())**2)
+
+        # score
+        self.init_score()
+
+        # control
+        self.win.listen()
+        self.win.onkey(self.go_up, 'Up')
+        self.win.onkey(self.go_right, 'Right')
+        self.win.onkey(self.go_down, 'Down')
+        self.win.onkey(self.go_left, 'Left')
+
     
-    x = int(random.randrange(2*DOT_SIZE, SCREEN_WIDTH - 2*DOT_SIZE) / DOT_SIZE) * DOT_SIZE
-    y = int(random.randrange(2*DOT_SIZE, SCREEN_HEIGHT - 2*DOT_SIZE) / DOT_SIZE) * DOT_SIZE
-    start_position = Point(x, y)
-
-    snake_list      = init_snake(start_position)
-    length_of_snake = len(snake_list)
-
-    x_head = snake_list[-1].x
-    y_head = snake_list[-1].y
-
-    # Create first apple
-    applex = int(random.randrange(DOT_SIZE, SCREEN_WIDTH - DOT_SIZE) / DOT_SIZE) * DOT_SIZE
-    appley = int(random.randrange(DOT_SIZE, SCREEN_HEIGHT - DOT_SIZE) / DOT_SIZE) * DOT_SIZE
-    apple  = Point(applex, appley)
-
-    dead = False
-    reason = None
-    while not dead:
-        # Get action from agent
-        action = learner.act(snake_list, apple)
-        if action == 'left':
-            x_head -= DOT_SIZE
-        elif action == 'right':
-            x_head += DOT_SIZE
-        elif action == 'up':
-            y_head -= DOT_SIZE
-        elif action == 'down':
-            y_head += DOT_SIZE
-
-        # Move snake
-        snake_head = Point(x_head,y_head)
-        snake_list.append(snake_head)
-
-        # Check if snake is off screen
-        if (x_head >= SCREEN_WIDTH) or (x_head < 0) or (y_head >= SCREEN_HEIGHT) or (y_head < 0):
-            reason = 'Screen'
-            dead = True
-
-        # Check if snake hit tail
-        if snake_head in snake_list[:-1]:
-            reason = 'Tail'
-            dead = True
-
-        # Check if snake ate apple
-        if (x_head == apple.x) and (y_head == apple.y):
-            applex = int(random.randrange(0, SCREEN_WIDTH - DOT_SIZE) / DOT_SIZE) * DOT_SIZE
-            appley = int(random.randrange(0, SCREEN_HEIGHT - DOT_SIZE) / DOT_SIZE) * DOT_SIZE
-            apple  = Point(applex, appley)
-            length_of_snake += 1
-
-        # Delete the last cell since we just added a head for moving, unless we ate a apple
-        if len(snake_list) > length_of_snake:
-            del snake_list[0]
-
-        # Draw apple, snake and update score
-        screen.fill(GRAY)
     
-        draw_apple(screen, apple)
-        draw_snake(screen, snake_list)
-        show_score(screen, length_of_snake - 3, game_count)
-        pygame.display.update()
 
-        # Update Q Table
-        learner.update_qvalues(reason)
+    def seed(self, seed=None):
+        self.np_random, seed = seeding.np_random(seed)
+        return [seed]
+
+
+    def init_snake(self) -> None:
+        self.snake = turtle.Turtle()
+        self.snake.shape(CELL_SHAPE)
+        self.snake.speed(0)
+        self.snake.penup()
+        self.snake.color(SNAKE_COLOR)
+
+        head_x = random.randint(-N_STEPS/2+3, N_STEPS/2-3)*PIXELS_PER_STEP
+        head_y = random.randint(-N_STEPS/2+3, N_STEPS/2-3)*PIXELS_PER_STEP
+
+        self.snake.goto(round(head_x), round(head_y))
+        self.snake.direction = PAUSE
+
+        # snake body, add first element (for location of snake's head)
+        self.snake_body = []
+        self.add_cell()
+        self.snake_body[0].goto(round(head_x), round(head_y)-0*PIXELS_PER_STEP)
+        self.add_cell()
+        self.snake_body[1].goto(round(head_x), round(head_y)-1*PIXELS_PER_STEP)
+        self.add_cell()
+        self.snake_body[2].goto(round(head_x), round(head_y)-2*PIXELS_PER_STEP)
+
+    
+    def move_head(self):
+        '''
+        Note: self.snake.xcor() from -BOARD_WIDTH/2 to BOARD_WIDTH/2
+              self.snake.ycor() from -BOARD_HEIGHT/2 to BOARD_HEIGHT/2
+        '''
+        if self.snake.direction == PAUSE:
+            self.reward = 0
+        if self.snake.direction == UP:
+            y = self.snake.ycor()
+            self.snake.sety(y + PIXELS_PER_STEP)
+        if self.snake.direction == RIGHT:
+            x = self.snake.xcor()
+            self.snake.setx(x + PIXELS_PER_STEP)
+        if self.snake.direction == DOWN:
+            y = self.snake.ycor()
+            self.snake.sety(y - PIXELS_PER_STEP)
+        if self.snake.direction == LEFT:
+            x = self.snake.xcor()
+            self.snake.setx(x - PIXELS_PER_STEP)
         
-        # Next Frame
-        clock.tick(FRAMESPEED)
+    
+    def go_up(self):
+        if self.snake.direction != DOWN:
+            self.snake.direction = UP
+    
+    
+    def go_down(self):
+        if (self.snake.direction != UP) & (self.snake.direction != PAUSE):
+            self.snake.direction = DOWN
+    
+    
+    def go_right(self):
+        if self.snake.direction != LEFT:
+            self.snake.direction = RIGHT
+    
+    
+    def go_left(self):
+        if self.snake.direction != RIGHT:
+            self.snake.direction = LEFT
 
-    return (length_of_snake-3, reason)
+    
 
-
-def init_snake(start_position: set) -> list:
-    '''
-    Initialize the snake.
-    starting_direction: ('u', 'd', 'l', 'r')
-        direction that the snake should start facing. Whatever the direction is, the head
-        of the snake will begin pointing that way.
-    '''
-
-    # initialize position of the head: ramdom in [2, self.board_size - 3]
-    head = start_position
-
-    possible_directions = ('up', 'down', 'left', 'right')
-    starting_direction  = possible_directions[random.randint(0, 3)]
-
-    # Body is below
-    if starting_direction == 'up':
-        snake = [Point(head.x, head.y + 2), Point(head.x, head.y + 1), head]
-    # Body is above
-    elif starting_direction == 'down':
-        snake = [Point(head.x, head.y - 2), Point(head.x, head.y - 1), head]
-    # Body is to the right
-    elif starting_direction == 'left':
-        snake = [Point(head.x + 2, head.y), Point(head.x + 1, head.y), head]
-    # Body is to the left
-    elif starting_direction == 'right':
-        snake = [Point(head.x - 2, head.y), Point(head.x - 1, head.y), head]
-
-    # snake_array    = deque(snake)
-    # body_locations = set(snake)
-    return snake
+    #
+    # APPLE
+    #
+    def random_coordinates(self):
+        apple_x = random.randint(-N_STEPS/2, N_STEPS/2)
+        apple_y = random.randint(-N_STEPS/2, N_STEPS/2)
+        return apple_x, apple_y
 
 
+    def generate_apple(self):
+        count = 0
+        while True:
+            self.apple.x, self.apple.y = self.random_coordinates()
+            self.apple.goto(round(self.apple.x*PIXELS_PER_STEP), round(self.apple.y*PIXELS_PER_STEP))
 
-def draw_apple(screen, apple):
-    pygame.draw.rect(screen, GREEN, [apple.x, apple.y, DOT_SIZE, DOT_SIZE])   
+            # Check whether the apple is not generated in snake's body
+            if not self.eat_apple():
+                return True
+            if count > BOARD_HEIGHT*BOARD_WIDTH:
+                print('You win!')
+                exit(0)
+                return False
 
-def show_score(screen, score, game_count):
-    font = pygame.font.SysFont('comicsansms', 18)
-    value = font.render(f'Game: {game_count}, Score: {score}', True, RED)
-    screen.blit(value, [0, 0])
+    def init_apple(self):
+        self.apple = turtle.Turtle()
+        self.apple.speed(0)
+        self.apple.shape(APPLE_SHAPE)
+        self.apple.color(APPLE_COLOR)
+        self.apple.penup()
 
-def draw_snake(screen, snake_list):
-    for p in snake_list[:-1]:
-        pygame.draw.rect(screen, BLUE, [p.x, p.y, DOT_SIZE, DOT_SIZE])
+        self.generate_apple()
+    
+    def move_apple(self):
+        if self.snake.distance(self.apple) < PIXELS_PER_STEP:
+            self.generate_apple()
+            self.update_score()
+            self.add_cell()
+            return True
 
-    pygame.draw.rect(screen, RED, [snake_list[-1].x, snake_list[-1].y, DOT_SIZE, DOT_SIZE])
+
+
+    #
+    # SCORES
+    #
+    def init_score(self):
+        self.score = turtle.Turtle()
+        self.score.speed(0)
+        self.score.color('black')
+        self.score.penup()
+        self.score.hideturtle()
+        self.score.goto(-BOARD_WIDTH/2, BOARD_HEIGHT/2-PIXELS_PER_STEP)
+        self.score.write(f'Score: {self.total_score}   Best Score: {self.maximum}   Reward : {self.reward}',
+                         align=TEXT_ALIGN,
+                         font=(TEXT_FONT, TEXT_SIZE, 'normal'))
 
 
 
-def main():
-    pygame.init()
+    def update_score(self):
+        self.total_score += 1
+        if self.total_score >= self.maximum:
+            self.maximum = self.total_score
+        self.score.clear()
+        self.score.write(f'Score: {self.total_score}   Best Score: {self.maximum}   Reward : {self.reward}',
+                         align=TEXT_ALIGN,
+                         font=(TEXT_FONT, TEXT_SIZE, 'normal'))
 
-    game_count = 1
 
-    learner = QLearning(SCREEN_WIDTH, SCREEN_HEIGHT, DOT_SIZE)
+    def reset_score(self):
+        self.score.clear()
+        self.total_score = 0
+        self.score.write(f'Score: {self.total_score}   Best Score: {self.maximum}   Reward : {self.reward}',
+                         align=TEXT_ALIGN,
+                         font=(TEXT_FONT, TEXT_SIZE, 'normal'))
+                    
 
-    while True:
-        learner.reset()
-        if game_count > QVALUES_N:
-            learner.epsilon = 0.
+
+
+    #
+    # SNAKE's BODY
+    #
+    def add_cell(self):
+        body = turtle.Turtle()
+        body.speed(0)
+        body.shape(CELL_SHAPE)
+        body.color(SNAKE_COLOR)
+        body.penup()
+        self.snake_body.append(body)
+        
+
+    def move_body(self):
+        length = len(self.snake_body)
+        if length > 0:
+            for index in range(length-1, 0, -1):
+                x = self.snake_body[index-1].xcor()
+                y = self.snake_body[index-1].ycor()
+                self.snake_body[index].goto(x, y)
+
+            self.snake_body[0].goto(self.snake.xcor(), self.snake.ycor())
+        
+    
+    def distance_to_apple(self):
+        self.prev_dist = self.dist
+        self.dist = math.sqrt((self.snake.xcor()-self.apple.xcor())**2 + (self.snake.ycor()-self.apple.ycor())**2)
+
+
+    def hit_self(self):
+        if len(self.snake_body) > 1:
+            for body in self.snake_body[1:]:
+                if body.distance(self.snake) < PIXELS_PER_STEP:
+                    self.reset_score()
+                    return True     
+
+    def eat_apple(self):
+        '''
+        Check if the apple is generated in snake's body
+        '''
+        if len(self.snake_body) > 0:
+            for body in self.snake_body:
+                if body.distance(self.apple) < PIXELS_PER_STEP:
+                    return True
+        return False
+
+    def hit_wall(self):
+        if (self.snake.xcor() > BOARD_WIDTH/2 ) or (self.snake.xcor() < -BOARD_WIDTH/2) or\
+           (self.snake.ycor() > BOARD_HEIGHT/2) or (self.snake.ycor() < -BOARD_HEIGHT/2):
+            self.reset_score()
+            return True
+    
+    def reset(self):
+        # turtle.clear()
+        # turtle.reset()
+
+        if self.human:
+            time.sleep(1)
+
+        # Move the apple and snake out of the window
+        # to clear the screen
+        self.apple.goto(OUT_OF_WINDOW, OUT_OF_WINDOW)
+        self.snake.goto(OUT_OF_WINDOW, OUT_OF_WINDOW)
+        for body in self.snake_body:
+            body.goto(OUT_OF_WINDOW, OUT_OF_WINDOW)
+        self.snake_body = []
+
+        # Initiate the apple and snake
+        
+        self.init_snake()
+        self.init_apple()
+
+        self.reward       = 0
+        self.total_score  = 0
+        self.dead         = False
+
+        return self.get_state()
+
+
+
+    #
+    # play
+    #
+    def play(self):
+        reward_given = False
+        self.win.update()
+        self.move_head()
+        
+        # If snake eats an apple, reward 10 points
+        if self.move_apple():
+            self.reward = 10
+            reward_given = True
+        
+        if self.snake.direction != PAUSE:
+            self.move_body()
+        
+        self.distance_to_apple()
+            
+        if self.hit_self():
+            self.reward  = -100
+            reward_given = True
+            self.dead    = True
+            if self.human:
+                self.reset()
+        
+        if self.hit_wall():
+            self.reward  = -100
+            reward_given = True
+            self.dead    = True
+            if self.human:
+                self.reset()
+        
+        if not reward_given:
+            self.reward = 1 if (self.dist < self.prev_dist) else -1
+
+        if self.human:
+            time.sleep(SLEEP)
+            state = self.get_state()
+
+
+
+
+
+    #
+    # AI agent
+    #
+    def step(self, action):
+        if action == 0:
+            self.go_up()
+        if action == 1:
+            self.go_right()
+        if action == 2:
+            self.go_down()
+        if action == 3:
+            self.go_left()
+        self.play()
+        state = self.get_state()
+        return state, self.reward, self.dead, {} #  state, rewards, dead, infor
+
+
+    def get_state(self):
+        # snake coordinates abs
+        self.snake.x, self.snake.y = self.snake.xcor()/N_STEPS, self.snake.ycor()/N_STEPS   
+        # snake coordinates scaled 0-1
+        self.snake.xsc, self.snake.ysc = self.snake.x/N_STEPS+0.5, self.snake.y/N_STEPS+0.5
+        # apple coordintes scaled 0-1 
+        self.apple.xsc, self.apple.ysc = self.apple.x/N_STEPS+0.5, self.apple.y/N_STEPS+0.5
+
+        # wall check
+        if self.snake.y >= N_STEPS/2:
+            wall_up   = 1
+            wall_down = 0
+        elif self.snake.y <= -N_STEPS/2:
+            wall_up   = 0
+            wall_down = 1
         else:
-            learner.epsilon = 0.1
+            wall_up   = 0
+            wall_down = 0
+        if self.snake.x >= N_STEPS/2:
+            wall_right = 1
+            wall_left  = 0
+        elif self.snake.x <= -N_STEPS/2:
+            wall_right = 0
+            wall_left  = 1
+        else:
+            wall_right = 0
+            wall_left  = 0
+
+        # body close
+        body_up = []
+        body_right = []
+        body_down = []
+        body_left = []
+        if len(self.snake_body) > 3:
+            for body in self.snake_body[3:]:
+                if body.distance(self.snake) == PIXELS_PER_STEP:
+                    if body.ycor() < self.snake.ycor():
+                        body_down.append(1)
+                    elif body.ycor() > self.snake.ycor():
+                        body_up.append(1)
+                    if body.xcor() < self.snake.xcor():
+                        body_left.append(1)
+                    elif body.xcor() > self.snake.xcor():
+                        body_right.append(1)
         
-        score, reason = run(learner, game_count)
-        
-        game_count += 1
-        if game_count % QVALUES_N == 0: # Save qvalues every QVALUES_N games
-            print('Save Q-values to JSON file in [data/qvalues.json]... ')
-            learner.save_qvalues()
+        body_up    = 1 if len(body_up)    > 0 else 0
+        body_right = 1 if len(body_right) > 0 else 0
+        body_down  = 1 if len(body_down)  > 0 else 0
+        body_left  = 1 if len(body_left)  > 0 else 0
+
+        # state: apple_up, apple_right, apple_down, apple_left, obstacle_up, obstacle_right, obstacle_down, obstacle_left, direction_up, direction_right, direction_down, direction_left
+        if self.env_info['state_space'] == 'coordinates':
+            return [self.apple.xsc, self.apple.ysc, self.snake.xsc, self.snake.ysc, \
+                    int(wall_up or body_up), int(wall_right or body_right), int(wall_down or body_down), int(wall_left or body_left), \
+                    int(self.snake.direction == UP), int(self.snake.direction == RIGHT), int(self.snake.direction == DOWN), int(self.snake.direction == LEFT)]
+        elif self.env_info['state_space'] == 'no direction':
+            return [int(self.snake.y < self.apple.y), int(self.snake.x < self.apple.x), int(self.snake.y > self.apple.y), int(self.snake.x > self.apple.x), \
+                    int(wall_up or body_up), int(wall_right or body_right), int(wall_down or body_down), int(wall_left or body_left), \
+                    0, 0, 0, 0]
+        elif self.env_info['state_space'] == 'no body knowledge':
+            return [int(self.snake.y < self.apple.y), int(self.snake.x < self.apple.x), int(self.snake.y > self.apple.y), int(self.snake.x > self.apple.x), \
+                    wall_up, wall_right, wall_down, wall_left, \
+                    int(self.snake.direction == UP), int(self.snake.direction == RIGHT), int(self.snake.direction == DOWN), int(self.snake.direction == LEFT)]
+        else:
+            return [int(self.snake.y < self.apple.y), int(self.snake.x < self.apple.x), int(self.snake.y > self.apple.y), int(self.snake.x > self.apple.x), \
+                    int(wall_up or body_up), int(wall_right or body_right), int(wall_down or body_down), int(wall_left or body_left), \
+                    int(self.snake.direction == UP), int(self.snake.direction == RIGHT), int(self.snake.direction == DOWN), int(self.snake.direction == LEFT)]
+
+    # def bye(self):
+    #     self.win.bye()
 
 
 
-if __name__ == '__main__':
-    main()
+if __name__ == '__main__':            
+    human = True
+    env = Snake(human=human)
 
+    # Enjoy playing yourself
+    if human:
+        while True:
+            env.play()
