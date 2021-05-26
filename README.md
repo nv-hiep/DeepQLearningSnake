@@ -12,26 +12,16 @@ Code is written in python 3.<br>
 4. gym
 
 ## Usage:
-1. The main file is `qlearning_snake.py`
+1. The main file is `main_qlearning.py`, Deep Q-learning algorithm
 
-2. Deep Q-learning algorithm in `helper\qlearner.py`
-
-3. Other tools in `helper\tools.py`
-
-4. A json file (`qvalues.json`) will be generated in `data\`
+2. Game environment in `snake.py`
 
 ## To Run
 - Run command:
->>> python3 deep_qlearning_snake.py
-
-
-
+python3 main_qlearning.py
 
 
 This project contains the following files:
-1. snake_env.py : run this and you can play the game Snake by yourself
-2. agent_1.py : run this and a Deep Reinforcement Learning Agent will learn to play snake
-3. plot_script.py : plotting the results of the agent
-4. requirements.txt : you will need some Python packages, like turtle, TensorFlow and Keras before you can run the scripts, install these first
-
-Enjoy!
+1. snake.py : game environment, run this and you can play the game Snake by yourself
+2. main_qlearning.py : run this and a Deep Reinforcement Learning Agent will learn to play snake
+3. requirements.txt : you will need some Python packages, like turtle, gym, TensorFlow and Keras before you can run the scripts, install these first
